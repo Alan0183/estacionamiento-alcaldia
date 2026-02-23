@@ -1,0 +1,975 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+
+// ═══════════════════════════════════════════════════════════════════════
+// CONFIGURACIÓN
+// ═══════════════════════════════════════════════════════════════════════
+const API_URL    = '/api/parking/map-data';
+const REFRESH_MS = 15000;
+
+// ═══════════════════════════════════════════════════════════════════════
+// PALETA COMPARTIDA
+// ═══════════════════════════════════════════════════════════════════════
+const COLORS = {
+    libre:     { fill: '#0f2d1a', stroke: '#238636', strokeH: '#2ea043', text: '#3fb950' },
+    ocupado:   { fill: '#2d0f0f', stroke: '#da3633', strokeH: '#f85149', text: '#f85149' },
+    reservado: { fill: '#2d1f00', stroke: '#9e6a03', strokeH: '#d29922', text: '#d29922' },
+};
+const BADGE = {
+    libre:     { bg:'#0f2d1a', color:'#2ea043', border:'#238636', label:'Libre' },
+    ocupado:   { bg:'#2d0f0f', color:'#f85149', border:'#da3633', label:'Ocupado' },
+    reservado: { bg:'#2d1f00', color:'#d29922', border:'#9e6a03', label:'Reservado' },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// TOOLTIP
+// ═══════════════════════════════════════════════════════════════════════
+function Tooltip({ visible, x, y, slotKey, info }) {
+    if (!visible) return null;
+    const estado = info?.estado ?? 'libre';
+    const badge  = BADGE[estado] ?? BADGE.libre;
+    return (
+        <div style={{
+            position:'fixed', left:x, top:y, zIndex:1000,
+            background:'#1c2128', border:'1px solid #30363d',
+            borderRadius:10, padding:'14px 18px', pointerEvents:'none',
+            minWidth:210, boxShadow:'0 8px 32px rgba(0,0,0,0.5)',
+            fontFamily:"'Syne',system-ui,sans-serif",
+        }}>
+            <div style={{fontFamily:'monospace',fontSize:11,color:'#8b949e',textTransform:'uppercase',letterSpacing:1,marginBottom:6}}>
+                CAJÓN #{slotKey}
+            </div>
+            <div style={{fontSize:16,fontWeight:700,color:'#f0f6fc',marginBottom:4}}>
+                {estado==='libre' ? 'Disponible' : (info?.nombre||'—')}
+            </div>
+            {estado!=='libre' && (
+                <div style={{fontFamily:'monospace',fontSize:13,color:'#58a6ff',letterSpacing:2,marginBottom:4}}>
+                    {estado==='ocupado' ? (info?.placa||'—') : (info?.notas||'—')}
+                </div>
+            )}
+            {estado==='ocupado' && info?.phone && (
+                <div style={{fontSize:13,color:'#58a6ff',marginBottom:6}}>{info.phone}</div>
+            )}
+            <span style={{
+                display:'inline-block',fontSize:11,fontWeight:700,padding:'3px 10px',
+                borderRadius:20,textTransform:'uppercase',letterSpacing:1,marginTop:4,
+                background:badge.bg,color:badge.color,border:`1px solid ${badge.border}`,
+            }}>{badge.label}</span>
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── MAPA PISO 1 ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+const SW1=26, SH1=36, G1=1;
+function row1(nums,sx,sy,w=SW1,h=SH1,sfx=''){
+    return nums.map((n,i)=>({num:n,x:sx+i*(w+G1),y:sy,w,h,suffix:sfx,slotKey:sfx?`${n}${sfx}`:String(n)}));
+}
+const SLOTS_P1=[
+    ...row1([1,2,3,4,5,6,7],80,12),
+    ...row1([8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35],530,12),
+    ...[64,65,66].map((n,i)=>({num:n,x:80,y:148+i*34,w:SW1,h:30,suffix:'',slotKey:String(n)})),
+    ...row1([63,62,61,60,59],112,148,SW1,90),
+    ...row1([58,57,56,55,54,53,52],904,148,SW1,90),
+    ...row1([51,50,49,48,47,46,45,44,43,42,41,40,39,38,37,36],1112,148,SW1,90),
+    ...row1([139,140,141,142,143,144,145,146,147,148],112,248,SW1,70,'B'),
+    ...row1([67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92],430,248,SW1,70),
+    ...row1([136,135,134,133,132,131,130,129,128],80,358,SW1,50,'B'),
+    ...row1([127,126,125,124,123,122,121,120,119,118,117,116,115,114,113,112,111,110,109,108,107,106,105,104,103,102,101,100,99,98,97,96,95,94,93],330,358,SW1,50),
+    {num:138,x:56,y:248,w:22,h:70,suffix:'B',slotKey:'138B'},
+    {num:137,x:56,y:358,w:22,h:50,suffix:'B',slotKey:'137B'},
+];
+
+function SlotP1({slot,info,onEnter,onMove,onLeave}){
+    const [hov,setHov]=useState(false);
+    const estado=info?.estado??'libre';
+    const c=COLORS[estado]??COLORS.libre;
+    return (
+        <g style={{cursor:'pointer'}}
+            onMouseEnter={e=>{setHov(true);onEnter(e,slot.slotKey);}}
+            onMouseMove={onMove} onMouseLeave={()=>{setHov(false);onLeave();}}>
+            <rect x={slot.x} y={slot.y} width={slot.w} height={slot.h} rx={3}
+                fill={c.fill} stroke={hov?c.strokeH:c.stroke} strokeWidth={hov?2:1.5}
+                style={{filter:hov?'brightness(1.6)':'none',transition:'filter 0.15s'}}/>
+            <text x={slot.x+slot.w/2} y={slot.y+slot.h/2-(slot.suffix?5:0)}
+                fontSize={8} fill={c.text} textAnchor="middle" dominantBaseline="middle"
+                fontFamily="monospace" style={{pointerEvents:'none',userSelect:'none'}}>{slot.num}</text>
+            {slot.suffix&&<text x={slot.x+slot.w/2} y={slot.y+slot.h/2+8}
+                fontSize={8} fill={c.text} textAnchor="middle"
+                fontFamily="monospace" style={{pointerEvents:'none',userSelect:'none'}}>B</text>}
+        </g>
+    );
+}
+
+function MapaPiso1({data,onEnter,onMove,onLeave}){
+    return (
+        <div style={{background:'#161b22',border:'1px solid #30363d',borderRadius:12,padding:20,overflowX:'auto'}}>
+            <svg viewBox="0 0 1560 430" xmlns="http://www.w3.org/2000/svg" style={{display:'block',minWidth:1400}}>
+                <rect x="2" y="2" width="50" height="90" fill="#161b22" stroke="#58a6ff" strokeWidth={1.5} rx={4}/>
+                <text x="27" y="47" fontSize={9} fontWeight={700} fill="#58a6ff"
+                    textAnchor="middle" dominantBaseline="middle" transform="rotate(-90,27,47)"
+                    style={{letterSpacing:2,fontFamily:'Syne,sans-serif'}}>ENTRADA</text>
+                <text x="380" y="120" fontSize={10} fill="#444c56" textAnchor="middle"
+                    fontFamily="monospace" style={{letterSpacing:2}}>PASILLO CENTRAL</text>
+                <rect x="55" y="2" width="1498" height="420" fill="none" stroke="#21262d" strokeWidth={1.5} rx={4}/>
+                <line x1="55" y1="230" x2="1553" y2="230" stroke="#21262d" strokeWidth={1} strokeDasharray="4,4"/>
+                <line x1="55" y1="340" x2="1553" y2="340" stroke="#21262d" strokeWidth={1} strokeDasharray="4,4"/>
+                {SLOTS_P1.map(slot=>(
+                    <SlotP1 key={`p1-${slot.slotKey}`} slot={slot} info={data[slot.slotKey]}
+                        onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                ))}
+            </svg>
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── MAPA PISO 2 ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+const SW2=28, SH2=22, G2=1;
+function row2(nums,sx,sy){
+    return nums.map((n,i)=>({num:n,x:sx+i*(SW2+G2),y:sy,slotKey:String(n)}));
+}
+const ox=60, rowH2=SH2+G2;
+
+// Sección 1 (esquina superior derecha): 335–346
+// 346 y 345 están posicionados 30px a la izquierda del bloque (S1_EXTRA)
+// por eso NO se incluyen en S1_TOP/S1_BOT para evitar keys duplicadas
+const S1_TOP=[344,342,340,338,336];   // sin 346
+const S1_BOT=[343,341,339,337,335];   // sin 345
+const s1x=ox+370, s1y=80;
+// Cajones 346/345 separados a la izquierda del bloque
+const S1_EXTRA=[
+    {num:346,x:s1x-30,y:s1y,       slotKey:'346'},
+    {num:345,x:s1x-30,y:s1y+rowH2, slotKey:'345'},
+];
+
+// Sección 2: 309–334
+const S2_TOP=[309,311,313,315,317,319,321,323,325,327,329,331,333];
+const S2_BOT=[310,312,314,316,318,320,322,324,326,328,330,332,334];
+const s2x=ox, s2y=195;
+
+// Sección 3: 283–308
+const S3_TOP=[308,306,304,302,300,298,296,294,292,290,288,286,284];
+const S3_BOT=[307,305,303,301,299,297,295,293,291,289,287,285,283];
+const s3x=ox, s3y=310;
+
+// Sección 4: 251–282
+const S4_TOP=[252,254,256,262,264,266,268,270,272,274,276,278,280,282];
+const S4_BOT=[251,253,255,261,263,265,267,269,271,273,275,277,279,281];
+const s4x=ox, s4y=420;
+
+const SLOTS_P2=[
+    ...S1_EXTRA,
+    ...row2(S1_TOP,s1x,s1y),
+    ...row2(S1_BOT,s1x,s1y+rowH2),
+    ...row2(S2_TOP,s2x,s2y),
+    ...row2(S2_BOT,s2x,s2y+rowH2),
+    ...row2(S3_TOP,s3x,s3y),
+    ...row2(S3_BOT,s3x,s3y+rowH2),
+    ...row2(S4_TOP,s4x,s4y),
+    ...row2(S4_BOT,s4x,s4y+rowH2),
+];
+
+function SlotP2({slot,info,onEnter,onMove,onLeave}){
+    const [hov,setHov]=useState(false);
+    const estado=info?.estado??'libre';
+    const c=COLORS[estado]??COLORS.libre;
+    return (
+        <g style={{cursor:'pointer'}}
+            onMouseEnter={e=>{setHov(true);onEnter(e,slot.slotKey);}}
+            onMouseMove={onMove} onMouseLeave={()=>{setHov(false);onLeave();}}>
+            <rect x={slot.x} y={slot.y} width={SW2} height={SH2} rx={2}
+                fill={c.fill} stroke={hov?c.strokeH:c.stroke} strokeWidth={hov?2:1}
+                style={{filter:hov?'brightness(1.6)':'none',transition:'fill 0.15s'}}/>
+            <text x={slot.x+SW2/2} y={slot.y+SH2/2+4}
+                textAnchor="middle" fontSize={8} fill={c.text}
+                fontFamily="'Courier New',monospace" fontWeight="600"
+                style={{pointerEvents:'none',userSelect:'none'}}>{slot.num}</text>
+        </g>
+    );
+}
+
+function MapaPiso2({data,onEnter,onMove,onLeave}){
+    const svgW=700, svgH=510;
+    return (
+        <div style={{background:'#0f172a',border:'1px solid #1e293b',borderRadius:12,padding:20,
+                     boxShadow:'0 0 60px rgba(245,158,11,0.05)',overflowX:'auto'}}>
+            <svg width={svgW} height={svgH} viewBox={`0 0 ${svgW} ${svgH}`}>
+                <defs>
+                    <marker id="arrow2" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+                        <path d="M0,0 L0,6 L6,3 z" fill="#f59e0b"/>
+                    </marker>
+                </defs>
+
+                {/* ENTRADA */}
+                <text x={18} y={svgH/2} fontSize={9} fill="#64748b" fontFamily="monospace"
+                    textAnchor="middle" transform={`rotate(-90,18,${svgH/2})`} letterSpacing={2}>ENTRADA</text>
+                <line x1={30} y1={svgH/2} x2={45} y2={svgH/2} stroke="#f59e0b" strokeWidth={1.5} markerEnd="url(#arrow2)"/>
+
+                {/* MOTOS */}
+                <rect x={ox+140} y={10} width={100} height={55} rx={4}
+                    fill="#0f172a" stroke="#334155" strokeWidth={1} strokeDasharray="3,2"/>
+                <text x={ox+190} y={43} textAnchor="middle" fontSize={11}
+                    fill="#64748b" fontFamily="monospace" letterSpacing={1}>MOTOS</text>
+
+                {/* Bloque edificio */}
+                <rect x={ox+270} y={10} width={90} height={40} rx={4}
+                    fill="#0f172a" stroke="#334155" strokeWidth={1}/>
+
+                {/* Divisores */}
+                <line x1={ox} y1={185} x2={ox+svgW-120} y2={185} stroke="#1e293b" strokeWidth={0.5} strokeDasharray="4,4"/>
+                <line x1={ox} y1={300} x2={ox+svgW-120} y2={300} stroke="#1e293b" strokeWidth={0.5} strokeDasharray="4,4"/>
+                <line x1={ox} y1={410} x2={ox+svgW-120} y2={410} stroke="#1e293b" strokeWidth={0.5} strokeDasharray="4,4"/>
+
+                {/* Labels pasillo */}
+                {[{x:ox-20,y:s2y+SH2*1.5,t:'A'},{x:ox-20,y:s3y+SH2*1.5,t:'B'},{x:ox-20,y:s4y+SH2*1.5,t:'C'}].map(l=>(
+                    <text key={l.t} x={l.x} y={l.y} fontSize={9} fill="#475569"
+                        fontFamily="monospace" textAnchor="middle" letterSpacing={1}>{l.t}</text>
+                ))}
+
+                {/* Cajones */}
+                {SLOTS_P2.map(slot=>(
+                    <SlotP2 key={`p2-${slot.slotKey}`} slot={slot} info={data[slot.slotKey]}
+                        onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                ))}
+            </svg>
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// HOOK: carga de datos por piso
+// ═══════════════════════════════════════════════════════════════════════
+function useFloorData(piso) {
+    const [data,   setData]   = useState({});
+    const [stats,  setStats]  = useState({libres:0,ocupados:0,reservados:0});
+    const [sync,   setSync]   = useState('idle');
+    const [time,   setTime]   = useState('');
+
+    const fetch_ = useCallback(async()=>{
+        setSync('loading');
+        try {
+            const res  = await fetch(`${API_URL}?piso=${piso}`,{
+                headers:{'Accept':'application/json','X-Requested-With':'XMLHttpRequest'},
+            });
+            if(!res.ok) throw new Error(`HTTP ${res.status}`);
+            const json = await res.json();
+            setData(json);
+            const vals = Object.values(json);
+            setStats({
+                libres:    vals.filter(v=>v.estado==='libre').length,
+                ocupados:  vals.filter(v=>v.estado==='ocupado').length,
+                reservados:vals.filter(v=>v.estado==='reservado').length,
+            });
+            setSync('ok');
+            setTime(new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',second:'2-digit'}));
+        } catch(e){
+            console.error(e);
+            setSync('error');
+        }
+    },[piso]);
+
+    // Limpiar datos al cambiar de piso y hacer fetch inmediato
+    useEffect(()=>{
+        setData({});
+        setStats({libres:0,ocupados:0,reservados:0});
+        setSync('idle');
+        fetch_();
+        const id=setInterval(fetch_,REFRESH_MS);
+        return ()=>clearInterval(id);
+    },[fetch_]);
+
+    return {data,stats,sync,time,refetch:fetch_};
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── MAPA PISO 3 — Parque de la Juventud ───────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+const SW3=30, SH3=40;
+
+// Cajones piso 3 con posiciones exactas del plano
+const SLOTS_P3 = [
+    // Columna izquierda vertical: 4,3,2,1 (de arriba a abajo)
+    {num:4,  x:75, y:175,              slotKey:'4'},
+    {num:3,  x:75, y:175+(SW3+1),      slotKey:'3'},
+    {num:2,  x:75, y:175+(SW3+1)*2,    slotKey:'2'},
+    {num:1,  x:75, y:175+(SW3+1)*3,    slotKey:'1'},
+    // Fila superior izquierda: 5,6
+    {num:5,  x:130,             y:100, slotKey:'5'},
+    {num:6,  x:130+(SW3+1),     y:100, slotKey:'6'},
+    // Fila superior derecha: 7,8,9,10
+    {num:7,  x:345,             y:100, slotKey:'7'},
+    {num:8,  x:345+(SW3+1),     y:100, slotKey:'8'},
+    {num:9,  x:345+(SW3+1)*2,   y:100, slotKey:'9'},
+    {num:10, x:345+(SW3+1)*3,   y:100, slotKey:'10'},
+];
+
+function SlotP3({slot, info, onEnter, onMove, onLeave}) {
+    const [hov, setHov] = useState(false);
+    const estado = info?.estado ?? 'libre';
+    const c = COLORS[estado] ?? COLORS.libre;
+    return (
+        <g style={{cursor:'pointer'}}
+            onMouseEnter={e=>{setHov(true); onEnter(e, slot.slotKey);}}
+            onMouseMove={onMove}
+            onMouseLeave={()=>{setHov(false); onLeave();}}>
+            <rect x={slot.x} y={slot.y} width={SW3} height={SH3} rx={2}
+                fill={c.fill} stroke={hov ? c.strokeH : c.stroke}
+                strokeWidth={hov ? 2 : 1}
+                style={{filter:hov?'brightness(1.6)':'none', transition:'fill 0.15s'}}/>
+            <text x={slot.x+SW3/2} y={slot.y+SH3/2+4}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize={9} fill={c.text}
+                fontFamily="'Courier New',monospace" fontWeight="700"
+                style={{pointerEvents:'none', userSelect:'none'}}>
+                {slot.num}
+            </text>
+        </g>
+    );
+}
+
+function Building3({x,y,w,h,label,sublabel,fontSize=9}){
+    return (
+        <g>
+            <rect x={x} y={y} width={w} height={h} rx={3}
+                fill="#0f172a" stroke="#334155" strokeWidth={1}/>
+            <text x={x+w/2} y={y+h/2-(sublabel?7:0)}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize={fontSize} fill="#64748b"
+                fontFamily="'Courier New',monospace" letterSpacing={0.5}>{label}</text>
+            {sublabel && sublabel.map((l,i)=>(
+                <text key={i} x={x+w/2}
+                    y={y+h/2+(i-sublabel.length/2+1)*11+3}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize={fontSize-1} fill="#64748b"
+                    fontFamily="'Courier New',monospace">{l}</text>
+            ))}
+        </g>
+    );
+}
+
+function MapaPiso3({data, onEnter, onMove, onLeave}) {
+    const W=720, H=380, pad=20;
+    return (
+        <div style={{background:'#0d1526', border:'1px solid #1e293b', borderRadius:14,
+                     padding:16, boxShadow:'0 0 80px rgba(245,158,11,0.04)', overflowX:'auto'}}>
+            <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+                <defs>
+                    <marker id="arr3" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+                        <path d="M0,0 L0,6 L6,3 z" fill="#f59e0b"/>
+                    </marker>
+                </defs>
+
+                {/* Borde exterior */}
+                <rect x={pad} y={pad} width={W-pad*2} height={H-pad*2-30}
+                    rx={4} fill="none" stroke="#1e293b" strokeWidth={1.5}/>
+
+                {/* Banner inferior */}
+                <rect x={pad} y={H-pad-30} width={W-pad*2} height={28}
+                    rx={3} fill="#0f172a" stroke="#334155" strokeWidth={1}/>
+                <text x={W/2} y={H-pad-16} textAnchor="middle" dominantBaseline="middle"
+                    fontSize={10} fill="#475569" fontFamily="'Courier New',monospace"
+                    letterSpacing={3}>PARQUE DE LA JUVENTUD</text>
+
+                {/* Edificios / áreas */}
+                <Building3 x={220} y={30}  w={110} h={55} label="KIOSKO"/>
+                <Building3 x={460} y={30}  w={120} h={55} label="ENTRADA" sublabel={["POR CALLE 4"]}/>
+                <Building3 x={pad+2} y={70} w={100} h={55} label="OFICINAS" sublabel={["MEDIO","AMBIENTE"]} fontSize={8}/>
+                {/* FORO DEL OLIVAR — bloque vertical derecho */}
+                <rect x={W-pad-42} y={110} width={40} height={H-pad*2-30-110+10}
+                    rx={3} fill="#0f172a" stroke="#334155" strokeWidth={1}/>
+                <text x={W-pad-22} y={110+(H-pad*2-30-110+10)/2}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize={9} fill="#64748b" fontFamily="'Courier New',monospace"
+                    letterSpacing={1}
+                    transform={`rotate(-90,${W-pad-22},${110+(H-pad*2-30-110+10)/2})`}>
+                    FORO DEL OLIVAR
+                </text>
+
+                <Building3 x={pad+2} y={175} w={65} h={22} label="OFICINA" fontSize={8}/>
+                <Building3 x={pad+2} y={200} w={65} h={70} label="DIRECCIÓN"
+                    sublabel={["DE MEDIO","AMBIENTE"]} fontSize={7}/>
+
+                {/* Línea de pasillo bajo slots 5-10 */}
+                <line x1={125} y1={145} x2={460} y2={145}
+                    stroke="#1e293b" strokeWidth={0.5} strokeDasharray="4,4"/>
+
+                {/* Flecha entrada Calle 4 */}
+                <line x1={520} y1={90} x2={520} y2={145}
+                    stroke="#f59e0b" strokeWidth={1.2} strokeDasharray="3,2"
+                    markerEnd="url(#arr3)"/>
+
+                {/* Cajones */}
+                {SLOTS_P3.map(slot=>(
+                    <SlotP3 key={`p3-${slot.slotKey}`} slot={slot}
+                        info={data[slot.slotKey]}
+                        onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                ))}
+            </svg>
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── MAPA PISO 4 — Prolongación Calle 4 / Canario ─────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+const SW4=28, SH4=22;
+
+// ── Helpers de posición (misma lógica del plano original) ────────────
+const W4=780, H4=430, pad4=16;
+const streetY4 = H4 - pad4 - 28;
+const botRowY4 = streetY4 - SH4 - 6;
+const topRowY4 = 100;
+const topRowYLow4 = topRowY4 + 30;
+const lx4 = pad4 + 38;
+const rightEdge4 = W4 - pad4 - 4;
+const plusX4 = 390, plusW4 = 20;
+
+// Cajones 1 y 2 (columna derecha)
+const s1x4 = rightEdge4 - SW4;
+const s1yTop4 = topRowY4 + 20;
+const s1yBot4 = s1yTop4 + SH4 + 2;
+
+// Fila inferior: calcular x de cada cajón de derecha a izquierda
+const bot4 = {};
+let cur4 = rightEdge4;
+[3,4,5,6,7,8,9].forEach(n => { cur4 -= SW4; bot4[n]=cur4; cur4 -= 1; });
+const oficinaBotW4=48, oficinaBotX4=cur4-oficinaBotW4; cur4=oficinaBotX4;
+[10,11,12,13,14,15,16].forEach(n => { cur4 -= SW4; bot4[n]=cur4; cur4 -= 1; });
+const jardinW4=32, jardinX4=cur4-jardinW4; cur4=jardinX4;
+[17,18,19,20,21].forEach(n => { cur4 -= SW4; bot4[n]=cur4; cur4 -= 1; });
+const casetaW4=36, casetaX4=cur4-casetaW4;
+
+// Fila superior: cajones 22-31 alrededor del + central
+const top4 = {};
+let tcur4 = plusX4;
+[22,23,24,25,26,27].forEach(n => { tcur4 -= SW4; top4[n]=tcur4; tcur4 -= 1; });
+tcur4 = plusX4 + plusW4;
+[28,29,30,31].forEach(n => { top4[n]=tcur4; tcur4 += SW4+1; });
+
+// Cajones 32 y 37 (standalone, marcados con x)
+const s32x4=470, s32y4=topRowY4-50;
+const s37x4=560, s37y4=topRowY4-50;
+
+// Cajones 33-36 encima de OFICINA superior
+const oficTopX4=380, oficTopY4=topRowY4-70;
+
+function SlotP4({slot, info, onEnter, onMove, onLeave}) {
+    const [hov,setHov] = useState(false);
+    const estado = info?.estado ?? 'libre';
+    const c = COLORS[estado] ?? COLORS.libre;
+    const w = slot.w ?? SW4;
+    const h = slot.h ?? SH4;
+    return (
+        <g style={{cursor:'pointer'}}
+            onMouseEnter={e=>{setHov(true); onEnter(e, String(slot.num));}}
+            onMouseMove={onMove}
+            onMouseLeave={()=>{setHov(false); onLeave();}}>
+            <rect x={slot.x} y={slot.y} width={w} height={h} rx={2}
+                fill={c.fill} stroke={hov?c.strokeH:c.stroke}
+                strokeWidth={hov?2:1}
+                style={{filter:hov?'brightness(1.6)':'none',transition:'fill 0.15s'}}/>
+            <text x={slot.x+w/2} y={slot.y+h/2}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize={8} fill={c.text}
+                fontFamily="'Courier New',monospace" fontWeight="700"
+                style={{pointerEvents:'none',userSelect:'none'}}>
+                {slot.num}
+            </text>
+        </g>
+    );
+}
+
+function Box4({x,y,w,h,lines=[],fontSize=8,dashed=false}) {
+    return (
+        <g>
+            <rect x={x} y={y} width={w} height={h} rx={3}
+                fill="#0f172a" stroke="#334155" strokeWidth={1}
+                strokeDasharray={dashed?'4,3':undefined}/>
+            {lines.map((l,i)=>(
+                <text key={i} x={x+w/2}
+                    y={y+h/2+(i-(lines.length-1)/2)*(fontSize+3)}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize={fontSize} fill="#64748b"
+                    fontFamily="'Courier New',monospace" letterSpacing={0.3}>{l}</text>
+            ))}
+        </g>
+    );
+}
+
+// Lista de todos los cajones del piso 4 para el render
+const SLOTS_P4 = [
+    // Columna derecha: 1 y 2
+    {num:1,  x:s1x4, y:s1yTop4},
+    {num:2,  x:s1x4, y:s1yBot4},
+    // Fila inferior: 3-21
+    ...[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21].map(n=>({num:n, x:bot4[n], y:botRowY4})),
+    // Fila superior — todos al mismo nivel que 27: 22-26
+    ...[22,23,24,25,26].map(n=>({num:n, x:top4[n], y:topRowYLow4})),
+    // Fila superior bajada: 27-31
+    ...[27,28,29,30,31].map(n=>({num:n, x:top4[n], y:topRowYLow4})),
+    // Standalone con altura extra: 32, 37
+    {num:32, x:s32x4, y:s32y4, h:SH4+10},
+    {num:37, x:s37x4, y:s37y4, h:SH4+10},
+    // Sobre OFICINA superior: 33-36
+    ...[33,34,35,36].map((n,i)=>({num:n, x:oficTopX4+i*(SW4+1), y:oficTopY4-SH4-4})),
+];
+
+function MapaPiso4({data, onEnter, onMove, onLeave}) {
+    return (
+        <div style={{background:'#0d1526',border:'1px solid #1e293b',borderRadius:14,
+                     padding:16,boxShadow:'0 0 80px rgba(245,158,11,0.04)',overflowX:'auto'}}>
+            <svg width={W4} height={H4} viewBox={`0 0 ${W4} ${H4}`}>
+                <defs>
+                    <marker id="arr4" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+                        <path d="M0,0 L0,6 L6,3 z" fill="#f59e0b"/>
+                    </marker>
+                </defs>
+
+                {/* Borde exterior */}
+                <rect x={pad4+36} y={pad4} width={W4-pad4-40} height={streetY4-pad4}
+                    fill="none" stroke="#1e293b" strokeWidth={1.5} rx={3}/>
+
+                {/* CANARIO — etiqueta vertical izquierda */}
+                <rect x={pad4} y={pad4} width={36} height={streetY4-pad4}
+                    rx={3} fill="#0f172a" stroke="#334155" strokeWidth={1.5}/>
+                <text x={pad4+18} y={pad4+(streetY4-pad4)/2}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize={11} fill="#64748b" fontFamily="'Courier New',monospace"
+                    letterSpacing={2} transform={`rotate(-90,${pad4+18},${pad4+(streetY4-pad4)/2})`}>
+                    CANARIO
+                </text>
+
+                {/* PROLONGACIÓN CALLE 4 — banner inferior */}
+                <rect x={pad4+36} y={streetY4} width={W4-pad4-40} height={28}
+                    rx={3} fill="#0f172a" stroke="#334155" strokeWidth={1}/>
+                <text x={(W4+pad4+36)/2} y={streetY4+14}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize={10} fill="#475569" fontFamily="'Courier New',monospace"
+                    letterSpacing={3}>PROLONGACIÓN CALLE 4</text>
+
+                {/* Edificios */}
+                <Box4 x={lx4+2}    y={80}  w={160} h={80} lines={["PROTECCIÓN","CIVIL"]}   fontSize={9}/>
+                <Box4 x={lx4+164}  y={95}  w={80}  h={65} lines={["SUBES-","TACIÓN"]}      fontSize={8}/>
+                <Box4 x={oficTopX4} y={oficTopY4} w={90} h={50} lines={["OFICINA"]}         fontSize={9}/>
+
+                {/* FORO DEL OLIVAR — bloque vertical derecho */}
+                <rect x={W4-pad4-42} y={110} width={40} height={streetY4-pad4-110+10}
+                    rx={3} fill="#0f172a" stroke="#334155" strokeWidth={1}/>
+                <text x={W4-pad4-22} y={110+(streetY4-pad4-110+10)/2}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize={9} fill="#64748b" fontFamily="'Courier New',monospace"
+                    letterSpacing={1}
+                    transform={`rotate(-90,${W4-pad4-22},${110+(streetY4-pad4-110+10)/2})`}>
+                    FORO DEL OLIVAR
+                </text>
+
+                {/* + columna central */}
+                <rect x={plusX4} y={topRowYLow4} width={plusW4} height={SH4}
+                    fill="#0f172a" stroke="#334155" strokeWidth={1} rx={1}/>
+                <text x={plusX4+plusW4/2} y={topRowYLow4+SH4/2}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize={10} fill="#475569" fontFamily="'Courier New',monospace">+</text>
+
+                {/* Marcadores x sobre 32 y 37 */}
+                <text x={s32x4+SW4/2} y={s32y4-7} textAnchor="middle" fontSize={8}
+                    fill="#64748b" fontFamily="'Courier New',monospace">x</text>
+                <text x={s37x4+SW4/2} y={s37y4-7} textAnchor="middle" fontSize={8}
+                    fill="#64748b" fontFamily="'Courier New',monospace">x</text>
+
+                {/* Entrada */}
+                <text x={lx4+6} y={botRowY4-12} fontSize={8} fill="#64748b"
+                    fontFamily="'Courier New',monospace" letterSpacing={1}
+                    transform={`rotate(-90,${lx4+6},${botRowY4-12})`}>Entrada</text>
+                <line x1={lx4+18} y1={botRowY4-4} x2={lx4+50} y2={botRowY4-4}
+                    stroke="#f59e0b" strokeWidth={1.2} strokeDasharray="3,2"
+                    markerEnd="url(#arr4)"/>
+
+                {/* Cajas fila inferior */}
+                <Box4 x={casetaX4}    y={botRowY4} w={casetaW4}    h={SH4} lines={["CASETA"]}  fontSize={7}/>
+                <Box4 x={jardinX4}    y={botRowY4} w={jardinW4}    h={SH4} lines={["JARDÍN"]}  fontSize={6}/>
+                <Box4 x={oficinaBotX4} y={botRowY4} w={oficinaBotW4} h={SH4} lines={["OFICINA"]} fontSize={7}/>
+
+                {/* Línea divisoria */}
+                <line x1={lx4+36} y1={botRowY4-18} x2={rightEdge4} y2={botRowY4-18}
+                    stroke="#1e293b" strokeWidth={0.5} strokeDasharray="5,4"/>
+
+                {/* Cajones */}
+                {SLOTS_P4.map(slot=>(
+                    <SlotP4 key={`p4-${slot.num}`} slot={slot}
+                        info={data[String(slot.num)]}
+                        onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                ))}
+            </svg>
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── MAPA PISO 5 — Calle Anconitanos / Av. Central ─────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+const SW5=24, SH5=18, G5=1;
+
+function GroupP5({nums, x, y, cols=1, data, onEnter, onMove, onLeave, border=true}) {
+    const rows = Math.ceil(nums.length / cols);
+    const gw = cols*SW5+(cols-1)*G5+6;
+    const gh = rows*SH5+(rows-1)*G5+6;
+    return (
+        <g>
+            {border && <rect x={x} y={y} width={gw} height={gh} rx={2}
+                fill="none" stroke="#2d3f55" strokeWidth={1}/>}
+            {nums.map((n,i)=>{
+                const c=i%cols, r=Math.floor(i/cols);
+                return <SlotP5 key={`p5-${n}`}
+                    num={n} x={x+3+c*(SW5+G5)} y={y+3+r*(SH5+G5)}
+                    info={data[String(n)]} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>;
+            })}
+        </g>
+    );
+}
+
+function SlotP5({num, x, y, w=SW5, h=SH5, info, onEnter, onMove, onLeave}) {
+    const [hov,setHov] = useState(false);
+    const estado = info?.estado ?? 'libre';
+    const c = COLORS[estado] ?? COLORS.libre;
+    return (
+        <g style={{cursor:'pointer'}}
+            onMouseEnter={e=>{setHov(true); onEnter(e, String(num));}}
+            onMouseMove={onMove}
+            onMouseLeave={()=>{setHov(false); onLeave();}}>
+            <rect x={x} y={y} width={w} height={h} rx={2}
+                fill={c.fill} stroke={hov?c.strokeH:c.stroke}
+                strokeWidth={hov?2:1}
+                style={{filter:hov?'brightness(1.6)':'none',transition:'fill 0.15s'}}/>
+            <text x={x+w/2} y={y+h/2}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize={6.5} fill={c.text}
+                fontFamily="'Courier New',monospace" fontWeight="700"
+                style={{pointerEvents:'none',userSelect:'none'}}>{num}</text>
+        </g>
+    );
+}
+
+function Box5({x,y,w,h,label='',sub,italic}) {
+    return (
+        <g>
+            <rect x={x} y={y} width={w} height={h} rx={3}
+                fill="#0f172a" stroke="#2d3f55" strokeWidth={1.5}/>
+            <text x={x+w/2} y={y+h/2-(sub?6:0)}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize={11} fill="#4a6080"
+                fontFamily="'Courier New',monospace"
+                fontStyle={italic?'italic':'normal'}>{label}</text>
+            {sub && <text x={x+w/2} y={y+h/2+8}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize={8} fill="#4a6080"
+                fontFamily="'Courier New',monospace">{sub}</text>}
+        </g>
+    );
+}
+
+function MapaPiso5({data, onEnter, onMove, onLeave}) {
+    const W=920, H=560, pad=14;
+    const leftX=pad+2, rightBound=840, streetY=H-pad-26, topY=pad;
+    const avX=rightBound+4, avW=52, entradaH=95;
+
+    return (
+        <div style={{background:'#0d1526',border:'1px solid #1e293b',borderRadius:14,
+                     padding:12,boxShadow:'0 0 80px rgba(245,158,11,0.03)',overflowX:'auto'}}>
+            <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+
+                {/* Borde exterior */}
+                <rect x={leftX} y={topY} width={rightBound-leftX} height={streetY-topY}
+                    fill="none" stroke="#1e293b" strokeWidth={1.5} rx={3}/>
+
+                {/* CALLE ANCONITANOS */}
+                <rect x={leftX} y={streetY} width={rightBound-leftX} height={26}
+                    rx={3} fill="#0f172a" stroke="#2d3f55" strokeWidth={1}/>
+                <text x={(leftX+rightBound)/2} y={streetY+13}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize={10} fill="#475569" fontFamily="'Courier New',monospace"
+                    letterSpacing={3} fontWeight="700">CALLE ANCONITANOS</text>
+
+                {/* AV. CENTRAL */}
+                <rect x={avX} y={topY+entradaH+3} width={avW} height={streetY-topY-entradaH-3}
+                    rx={3} fill="#0f172a" stroke="#2d3f55" strokeWidth={1.5}/>
+                <text x={avX+avW/2} y={topY+entradaH+3+(streetY-topY-entradaH-3)/2}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize={9} fill="#4a6080" fontFamily="'Courier New',monospace"
+                    letterSpacing={1.5}
+                    transform={`rotate(-90,${avX+avW/2},${topY+entradaH+3+(streetY-topY-entradaH-3)/2})`}>
+                    Av. Central</text>
+
+                {/* ENTRADA / SALIDA */}
+                <Box5 x={avX} y={topY} w={avW} h={entradaH} label="ENTRADA" sub="/ SALIDA"/>
+
+                {/* Edificios */}
+                <Box5 x={leftX+3} y={topY+3} w={215} h={130} label="Edificio" italic/>
+                <Box5 x={328} y={topY+3} w={90} h={65} label="Edificio" italic/>
+                <Box5 x={440} y={topY+3} w={200} h={58}/>
+                <Box5 x={648} y={topY+3} w={48} h={58}/>
+                <Box5 x={702} y={topY+3} w={60} h={58}/>
+
+                {/* ── TOP AREA ── */}
+                <SlotP5 num={250} x={leftX+3}   y={topY+138} w={28} h={SH5} info={data['250']} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <SlotP5 num={249} x={leftX+35}  y={topY+138} w={65} h={SH5} info={data['249']} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <SlotP5 num={248} x={leftX+104} y={topY+138} w={60} h={SH5} info={data['248']} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <SlotP5 num={247} x={leftX+168} y={topY+138} w={52} h={SH5} info={data['247']} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+
+                <GroupP5 nums={[246,245]}   x={328}          y={topY+72} cols={1} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[244,243]}   x={328+SW5+G5+8} y={topY+72} cols={1} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[242,241]}   x={420}          y={topY+72} cols={1} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[240,239,238,237,236,235,234,233,232,231]} x={440} y={topY+63} cols={10} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[230,229]}   x={708} y={topY+63} cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[228]}       x={766} y={topY+63} cols={1} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+
+                {/* ── SECCIÓN IZQUIERDA ── */}
+                <text x={leftX+4} y={215} fontSize={8} fill="#64748b" fontFamily="'Courier New',monospace">x</text>
+                <GroupP5 nums={[129,128,131,130]}              x={leftX+16}              y={206}             cols={4} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[133,132]}                      x={leftX+16+2*(SW5+G5)+8} y={206+SH5+G5+4}    cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[135,134]} x={leftX+110} y={288}             cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[137,136]} x={leftX+110} y={288+SH5+G5+4}   cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[139,138]} x={leftX+110} y={342}             cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[141,140]} x={leftX+110} y={342+SH5+G5+4}   cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[143,142]} x={leftX+110} y={400}             cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[145,144]} x={leftX+110} y={400+SH5+G5+4}   cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+
+                {/* ── CENTRO-IZQUIERDA ── */}
+                <GroupP5 nums={[171,170]}  x={310} y={246}           cols={1} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[173,175]}  x={338} y={222}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[172,174]}  x={338} y={222+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[167,166]}  x={310} y={308}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[169,168]}  x={370} y={308}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[159,158]}  x={310} y={358}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[163,162]}  x={310} y={358+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[165,164]}  x={370} y={358}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[161,160]}  x={370} y={358+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[151,150]}  x={310} y={416}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[155,154]}  x={310} y={416+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[157,156]}  x={370} y={416}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[153,152]}  x={370} y={416+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[147,146]}  x={310} y={472}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[149,148]}  x={370} y={472}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+
+                {/* ── CENTRO-DERECHA ── */}
+                <GroupP5 nums={[177,176]} x={448} y={198} cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[179,178]} x={448} y={224} cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[181,180]} x={448} y={250} cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <SlotP5 num={182} x={508} y={198} w={SW5} h={SH5*2+G5+6} info={data['182']} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <SlotP5 num={183} x={508} y={284} w={SW5} h={SH5*2+G5+6} info={data['183']} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+
+                {/* ── COLUMNA VERTICAL CENTRO-DERECHA ── */}
+                <GroupP5 nums={[197,196,195,194]} x={546} y={198} cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[193,192,191,190]} x={546} y={248} cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[189,188,187,186]} x={546} y={360} cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[185,184]}         x={546} y={440} cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+
+                {/* ── COLUMNA DERECHA ── */}
+                <GroupP5 nums={[199,198]} x={658} y={178}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[201,200]} x={658} y={178+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[205,203]} x={658} y={244}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[204,202]} x={658} y={244+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[207,206]} x={658} y={318}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[209,208]} x={658} y={318+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[211,210]} x={658} y={396}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[213,212]} x={658} y={396+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[214]}     x={658}           y={460} cols={1} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[215]}     x={658+SW5+G5+30} y={460} cols={1} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+
+                {/* ── COLUMNA AV. CENTRAL ── */}
+                <GroupP5 nums={[226,227]} x={720} y={178}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[224,225]} x={720} y={178+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[222,223]} x={720} y={244}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[220,221]} x={720} y={244+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[218,219]} x={720} y={318}           cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+                <GroupP5 nums={[216,217]} x={720} y={318+SH5+G5+4}  cols={2} data={data} onEnter={onEnter} onMove={onMove} onLeave={onLeave}/>
+
+            </svg>
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PÁGINA PRINCIPAL
+// ═══════════════════════════════════════════════════════════════════════
+const PISOS = [
+    {id:1, label:'Estacionamiento 1',  sublabel:'ESTACIONAMIENTO CALLE 10'},
+    {id:2, label:'Estacionamiento 2',  sublabel:'ESTACIONAMIENTO CANARIOS'},
+    {id:3, label:'Estacionamiento 3',  sublabel:'ESTACIONAMIENTO MEDIO AMBIENTE'},
+    {id:4, label:'Estacionamiento 4',  sublabel:'ESTACIONAMIENTO OBRAS'},
+    {id:5, label:'Estacionamiento 5',  sublabel:'ESTACIONAMIENTO PAGADURIA'},
+];
+
+export default function ParkingIndex() {
+    const [pisoActivo, setPisoActivo] = useState(1);
+    const [menuOpen,   setMenuOpen]   = useState(false);
+    const [tooltip, setTooltip] = useState({visible:false,x:0,y:0,slotKey:'',info:null});
+
+    const {data,stats,sync,time} = useFloorData(pisoActivo);
+
+    const pisoInfo = PISOS.find(p=>p.id===pisoActivo);
+
+    // Sync dot
+    const dotColor = {idle:'#444c56',loading:'#d29922',ok:'#238636',error:'#da3633'}[sync];
+    const dotAnim  = sync==='loading'?'pulse 1s infinite':'none';
+
+    // Tooltip handlers
+    const handleEnter = useCallback((e, slotKey)=>{
+        const info = data[slotKey]??{estado:'libre'};
+        const pos  = calcPos(e.clientX,e.clientY);
+        setTooltip({visible:true,...pos,slotKey,info});
+    },[data]);
+
+    const handleMove = useCallback((e)=>{
+        const pos = calcPos(e.clientX,e.clientY);
+        setTooltip(t=>t.visible?{...t,...pos}:t);
+    },[]);
+
+    const handleLeave = useCallback(()=>{
+        setTooltip(t=>({...t,visible:false}));
+    },[]);
+
+    return (
+        <>
+            <style>{`
+                @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;700;800&display=swap');
+                @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+                *{box-sizing:border-box;}
+                .floor-menu{position:relative;display:inline-block;}
+                .floor-btn{
+                    display:flex;align-items:center;gap:10px;
+                    background:#161b22;border:1px solid #30363d;
+                    color:#f0f6fc;border-radius:8px;padding:10px 16px;
+                    cursor:pointer;font-family:'Syne',sans-serif;font-size:14px;font-weight:700;
+                    transition:border-color 0.15s;
+                }
+                .floor-btn:hover{border-color:#58a6ff;}
+                .floor-badge{
+                    background:#58a6ff22;color:#58a6ff;
+                    border:1px solid #58a6ff44;border-radius:6px;
+                    padding:2px 8px;font-size:12px;font-family:monospace;
+                }
+                .floor-dropdown{
+                    position:absolute;top:calc(100% + 6px);left:0;
+                    background:#1c2128;border:1px solid #30363d;
+                    border-radius:10px;min-width:200px;z-index:500;
+                    box-shadow:0 8px 32px rgba(0,0,0,0.5);overflow:hidden;
+                }
+                .floor-option{
+                    display:flex;flex-direction:column;gap:2px;
+                    padding:12px 16px;cursor:pointer;
+                    transition:background 0.1s;border-bottom:1px solid #21262d;
+                    font-family:'Syne',sans-serif;
+                }
+                .floor-option:last-child{border-bottom:none;}
+                .floor-option:hover{background:#30363d44;}
+                .floor-option.active{background:#58a6ff11;}
+                .floor-option-label{font-size:14px;font-weight:700;color:#f0f6fc;}
+                .floor-option-sub{font-size:11px;color:#8b949e;font-family:monospace;}
+                .chevron{transition:transform 0.2s;}
+                .chevron.open{transform:rotate(180deg);}
+            `}</style>
+
+            <div style={{background:'#fff',minHeight:'100vh',padding:24,
+                         fontFamily:"'Syne',system-ui,sans-serif",color:'#691C32'}}>
+
+                {/* ── HEADER ─────────────────────────────────────────── */}
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+                             marginBottom:28,paddingBottom:20,borderBottom:'1px solid #30363d',
+                             flexWrap:'wrap',gap:12}}>
+                    <div style={{display:'flex',alignItems:'center',gap:16}}>
+                        {/* Logo */}
+                        {/* <h1 style={{fontSize:'1.6rem',fontWeight:800,color:'#f0f6fc',margin:0}}>
+                            Parking <span style={{color:'#58a6ff'}}>MAP</span>
+                        </h1> */}
+
+                        {/* ── MENÚ DESPLEGABLE PISOS ── */}
+                        <div className="floor-menu">
+                            <button className="floor-btn" onClick={()=>setMenuOpen(o=>!o)}>
+                                <span className="floor-badge">{pisoInfo?.label}</span>
+                                <span style={{fontSize:13,color:'#8b949e'}}>{pisoInfo?.sublabel}</span>
+                                <svg className={`chevron${menuOpen?' open':''}`} width="14" height="14"
+                                    viewBox="0 0 24 24" fill="none" stroke="#8b949e" strokeWidth="2">
+                                    <polyline points="6 9 12 15 18 9"/>
+                                </svg>
+                            </button>
+
+                            {menuOpen && (
+                                <>
+                                    {/* Overlay para cerrar al hacer clic fuera */}
+                                    <div style={{position:'fixed',inset:0,zIndex:499}}
+                                         onClick={()=>setMenuOpen(false)}/>
+                                    <div className="floor-dropdown">
+                                        {PISOS.map(p=>(
+                                            <div key={p.id}
+                                                className={`floor-option${pisoActivo===p.id?' active':''}`}
+                                                onClick={()=>{setPisoActivo(p.id);setMenuOpen(false);}}>
+                                                <span className="floor-option-label">{p.label}</span>
+                                                <span className="floor-option-sub">{p.sublabel}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Stats + sync */}
+                    <div style={{display:'flex',alignItems:'center',gap:24,flexWrap:'wrap'}}>
+                        {[
+                            {color:'#238636',label:`${stats.libres} Libres`},
+                            {color:'#da3633',label:`${stats.ocupados} Ocupados`},
+                            {color:'#9e6a03',label:`${stats.reservados} Reservados`},
+                        ].map(({color,label})=>(
+                            <div key={label} style={{display:'flex',alignItems:'center',gap:8,
+                                                     fontFamily:'monospace',fontSize:13}}>
+                                <div style={{width:10,height:10,borderRadius:2,background:color}}/>
+                                <span>{label}</span>
+                            </div>
+                        ))}
+                        <div style={{display:'flex',alignItems:'center',gap:6,
+                                     fontFamily:'monospace',fontSize:12,color:'#8b949e'}}>
+                            <div style={{width:8,height:8,borderRadius:'50%',
+                                         background:dotColor,animation:dotAnim}}/>
+                            <span>
+                                {sync==='loading'&&'Actualizando…'}
+                                {sync==='ok'&&`Sync ${time}`}
+                                {sync==='error'&&'Sin conexión'}
+                                {sync==='idle'&&'—'}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                {/* ── MAPA ACTIVO ─────────────────────────────────────── */}
+                {pisoActivo===1 && (
+                    <MapaPiso1 data={data} onEnter={handleEnter} onMove={handleMove} onLeave={handleLeave}/>
+                )}
+                {pisoActivo===2 && (
+                    <MapaPiso2 data={data} onEnter={handleEnter} onMove={handleMove} onLeave={handleLeave}/>
+                )}
+                {pisoActivo===3 && (
+                    <MapaPiso3 data={data} onEnter={handleEnter} onMove={handleMove} onLeave={handleLeave}/>
+                )}
+                {pisoActivo===4 && (
+                    <MapaPiso4 data={data} onEnter={handleEnter} onMove={handleMove} onLeave={handleLeave}/>
+                )}
+                {pisoActivo===5 && (
+                    <MapaPiso5 data={data} onEnter={handleEnter} onMove={handleMove} onLeave={handleLeave}/>
+                )}
+
+            </div>
+
+            <Tooltip {...tooltip}/>
+        </>
+    );
+}
+
+function calcPos(cx,cy){
+    const TW=220,TH=130;
+    return {
+        x: cx+16+TW>window.innerWidth  ? cx-TW-16 : cx+16,
+        y: cy-10+TH>window.innerHeight ? cy-TH    : cy-10,
+    };
+}

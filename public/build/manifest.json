@@ -1,0 +1,61 @@
+{
+  "_jsx-runtime-u17CrQMm.js": {
+    "file": "assets/jsx-runtime-u17CrQMm.js",
+    "name": "jsx-runtime"
+  },
+  "resources/js/Pages/Parking/Index.jsx": {
+    "file": "assets/Index-DtOHAK5m.js",
+    "name": "Index",
+    "src": "resources/js/Pages/Parking/Index.jsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-u17CrQMm.js",
+      "resources/js/app.js"
+    ]
+  },
+  "resources/js/Pages/Parking/Index2.jsx": {
+    "file": "assets/Index2-CKwUAec4.js",
+    "name": "Index2",
+    "src": "resources/js/Pages/Parking/Index2.jsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-u17CrQMm.js",
+      "resources/js/app.js"
+    ]
+  },
+  "resources/js/Pages/Parking/Index3.jsx": {
+    "file": "assets/Index3-D02mfnpX.js",
+    "name": "Index3",
+    "src": "resources/js/Pages/Parking/Index3.jsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-u17CrQMm.js",
+      "resources/js/app.js"
+    ]
+  },
+  "resources/js/Pages/Parking/Map.jsx": {
+    "file": "assets/Map-3QMmjWMy.js",
+    "name": "Map",
+    "src": "resources/js/Pages/Parking/Map.jsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-u17CrQMm.js",
+      "resources/js/app.js"
+    ]
+  },
+  "resources/js/app.js": {
+    "file": "assets/app-BMQbkYCC.js",
+    "name": "app",
+    "src": "resources/js/app.js",
+    "isEntry": true,
+    "dynamicImports": [
+      "resources/js/Pages/Parking/Index.jsx",
+      "resources/js/Pages/Parking/Index2.jsx",
+      "resources/js/Pages/Parking/Index3.jsx",
+      "resources/js/Pages/Parking/Map.jsx"
+    ],
+    "css": [
+      "assets/app-7T_arPNu.css"
+    ]
+  }
+}
